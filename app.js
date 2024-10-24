@@ -1,34 +1,60 @@
-const express = require('express');
-const path = require('path');
-const app = express();
-const http = require("http");
-const socket = require('socket.io');
-const server = http.createServer(app);
-const io = socket(server);
+const socket = io();
 
+if (navigator.geolocation) {
+    navigator.geolocation.watchPosition(
+        (position) => {
+            const { latitude, longitude } = position.coords;
+            socket.emit('send-location', { latitude, longitude });
+        },
+        (err) => {
+            console.error(err);
+        },
+        {
+            enableHighAccuracy: true,
+            timeout: 5000,
+            maximumAge: 0
+        }
+    );
+}
 
-app.set("view engine", 'ejs');
-app.use(express.static(path.join(__dirname, "public")));
+const map = L.map("map").setView([0, 0], 10);
 
-app.get("/", (req, res) => {
-    res.render("index");
-});
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors",
+}).addTo(map);
 
-io.on("connection", (socket) => {
-    socket.on("send-location",(data)=>{
-     io.emit("receive-location",{id:socket.id,...data});
-    })
-    socket.on("disconnect",()=>{
-        io.emit("user-disconnect",socket.id);
-    })
-    console.log("A user connected");
-});
+const markers = {}; 
 
+// Function to get location name
+async function getLocationName(latitude, longitude) {
+    try {
+        const response = await axios.get(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`);
+        return response.data.display_name; // Get the address
+    } catch (error) {
+        console.error("Error retrieving location name:", error);
+        return "Location not found"; // Fallback if error occurs
+    }
+}
 
-server.listen(3003, (err) => {
-    if (err) {
-        console.log(err);
+socket.on("receive-location", async (data) => {
+    const { id, latitude, longitude } = data;
+    map.setView([latitude, longitude], 20); 
+
+    const locationName = await getLocationName(latitude, longitude);
+
+    if (markers[id]) {
+        markers[id].setLatLng([latitude, longitude]);
+        markers[id].setPopupContent(`User ID: ${id}<br>Location: ${locationName}<br>Lat: ${latitude}<br>Lng: ${longitude}`);
     } else {
-        console.log("Server is running on port 3003");
+        markers[id] = L.marker([latitude, longitude]).addTo(map)
+            .bindPopup(`User ID: ${id}<br>Location: ${locationName}<br>Lat: ${latitude}<br>Lng: ${longitude}`)
+            .openPopup(); 
+    }
+});
+
+socket.on("user-disconnect", (id) => {
+    if (markers[id]) {
+        map.removeLayer(markers[id]); 
+        delete markers[id];
     }
 });
